@@ -1,4 +1,3 @@
-import '../firebase_service.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../firebase_service.dart';
@@ -55,7 +54,7 @@ class _PosScreenState extends State<PosScreen> {
 
   // Lắng nghe dữ liệu bàn hiện tại theo storeId
   void _listenTableData() {
-    FirebaseService.getTableRef(widget.storeId, widget.tableId).onValue.listen((event) {
+    FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).onValue.listen((event) {
       if (mounted) {
         if (event.snapshot.value != null) {
           TableModel table = TableModel.fromMap(event.snapshot.value as Map<dynamic, dynamic>);
@@ -95,7 +94,7 @@ class _PosScreenState extends State<PosScreen> {
       OrderItemModel(fName: fullName, price: product.price, qty: 1, done: false),
     );
 
-    FirebaseService.getTableRef(widget.storeId, widget.tableId).update({
+    FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({
       'items': updatedList.map((e) => e.toMap()).toList(),
       'status': _tableStatus == 'green' ? 'green' : 'white',
       'startTime': DateTime.now().toIso8601String(),
@@ -175,7 +174,7 @@ class _PosScreenState extends State<PosScreen> {
 
   // Xác nhận đơn (Đổi bàn sang màu đỏ)
   void _handleConfirm() {
-    FirebaseService.getTableRef(widget.storeId, widget.tableId).update({'status': 'red'});
+    FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({'status': 'red'});
     Navigator.pop(context);
   }
 
@@ -185,7 +184,7 @@ class _PosScreenState extends State<PosScreen> {
     for (var item in updatedList) {
       item.done = true;
     }
-    FirebaseService.getTableRef(widget.storeId, widget.tableId).update({
+    FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({
       'items': updatedList.map((e) => e.toMap()).toList(),
       'status': 'green',
     });
@@ -250,7 +249,7 @@ class _PosScreenState extends State<PosScreen> {
                     });
 
                     // 2. Xóa bàn (trả bàn về trạng thái trống)
-                    await FirebaseService.getTableRef(widget.storeId, widget.tableId).remove();
+                    await FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).remove();
 
                     if (!context.mounted) return;
                     Navigator.pop(context); // Đóng popup thanh toán

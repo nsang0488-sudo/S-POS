@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
 import '../firebase_service.dart';
 import '../models/table_model.dart';
 import 'pos_screen.dart';
@@ -56,7 +55,8 @@ class _TableScreenState extends State<TableScreen> {
   // Hàm đăng xuất đổi gian hàng
   void _logoutStore() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.remove('current_store_id');
+    await prefs.remove('saved_store_id');
+    await prefs.remove('saved_user_role');
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
@@ -141,7 +141,7 @@ class _TableScreenState extends State<TableScreen> {
                   borderRadius: BorderRadius.circular(10),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.03),
+                    color: Colors.black.withValues(alpha: 0.03),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
