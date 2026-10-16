@@ -16,7 +16,6 @@ class AdminScreen extends StatefulWidget {
 
 class _AdminScreenState extends State<AdminScreen> {
   List<ProductModel> _menuList = [];
-  int _totalTables = 40;
   final TextEditingController _tablesController = TextEditingController();
   
   // Doanh thu trong ngày
@@ -53,7 +52,6 @@ class _AdminScreenState extends State<AdminScreen> {
       if (event.snapshot.value != null && mounted) {
         int val = int.tryParse(event.snapshot.value.toString()) ?? 40;
         setState(() {
-          _totalTables = val;
           _tablesController.text = val.toString();
         });
       }
@@ -195,7 +193,8 @@ class _AdminScreenState extends State<AdminScreen> {
   // Đăng xuất đổi gian hàng
   void _logoutStore() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.remove('current_store_id');
+    await prefs.remove('saved_store_id');
+    await prefs.remove('saved_user_role');
     if (!mounted) return;
     Navigator.pushReplacement(
       context,
