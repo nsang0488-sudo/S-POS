@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'table_screen.dart';
+import 'pos_screen.dart';
+import 'tasks_screen.dart';
 import 'admin_screen.dart';
 
 class MainNavigation extends StatefulWidget {
@@ -18,40 +20,88 @@ class MainNavigation extends StatefulWidget {
 
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
+  int? _selectedTableId;
+
+  void _onSelectTable(int tableId) {
+    setState(() {
+      _selectedTableId = tableId;
+      _currentIndex = 1; // Switch to POS tab
+    });
+  }
+
+  void _onClearSelectedTable() {
+    setState(() {
+      _selectedTableId = null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    bool isOwner = widget.userRole == 'owner';
-
-    final List<Widget> screens = [
-      TableScreen(storeId: widget.storeId),
-      if (isOwner) AdminScreen(storeId: widget.storeId),
+    List<Widget> screens = [
+      TableScreen(
+        storeId: widget.storeId,
+        onTableSelected: _onSelectTable,
+      ),
+      PosScreen(
+        storeId: widget.storeId,
+        tableId: _selectedTableId,
+        onBackToTables: () {
+          setState(() {
+            _currentIndex = 0;
+          });
+        },
+        onClearTable: _onClearSelectedTable,
+      ),
+      TasksScreen(storeId: widget.storeId),
+      AdminScreen(storeId: widget.storeId),
     ];
 
     return Scaffold(
-      body: screens[_currentIndex < screens.length ? _currentIndex : 0],
-      bottomNavigationBar: isOwner
-          ? BottomNavigationBar(
-              currentIndex: _currentIndex,
-              selectedItemColor: const Color(0xFF5D3FD3),
-              unselectedItemColor: Colors.grey,
-              onTap: (index) {
-                setState(() {
-                  _currentIndex = index;
-                });
-              },
-              items: const [
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.table_restaurant),
-                  label: 'Sơ Đồ Bàn',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.admin_panel_settings),
-                  label: 'Quản Lý & Doanh Thu',
-                ),
-              ],
-            )
-          : null,
+      body: IndexedStack(
+        index: _currentIndex,
+        children: screens,
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        selectedItemColor: const Color(0xFF5D3FD3),
+        unselectedItemColor: Colors.grey,
+        type: BottomNavigationBarType.fixed,
+        onTap: (index) {
+          if (index == 1 && _selectedTableId == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Vui lòng chọn bàn trước khi gọi món!'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+            setState(() {
+              _currentIndex = 0; // Redirect to Tables tab
+            });
+            return;
+          }
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.table_restaurant),
+            label: '🪑 BÀN',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.coffee),
+            label: '☕ POS',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.assignment),
+            label: '📋 VIỆC',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings),
+            label: '⚙️ QUẢN LÝ',
+          ),
+        ],
+      ),
     );
   }
 }
