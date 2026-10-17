@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import '../firebase_service.dart';
 import '../models/table_model.dart';
-import 'pos_screen.dart';
 import 'store_login_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class TableScreen extends StatefulWidget {
   final String storeId;
+  final Function(int tableId)? onTableSelected;
 
-  const TableScreen({super.key, required this.storeId});
+  const TableScreen({
+    super.key,
+    required this.storeId,
+    this.onTableSelected,
+  });
 
   @override
   State<TableScreen> createState() => _TableScreenState();
@@ -16,7 +20,7 @@ class TableScreen extends StatefulWidget {
 
 class _TableScreenState extends State<TableScreen> {
   Map<String, TableModel> _tablesMap = {};
-  int _totalTablesCount = 40; // Mặc định hiển thị 40 bàn, có thể thay đổi trong Admin
+  int _totalTablesCount = 40;
 
   @override
   void initState() {
@@ -24,10 +28,8 @@ class _TableScreenState extends State<TableScreen> {
     _loadStoreSettingsAndTables();
   }
 
-  // Lấy cấu hình số lượng bàn và lắng nghe dữ liệu các bàn từ Firebase theo storeId
   void _loadStoreSettingsAndTables() {
-    // Đọc cấu hình tổng số bàn của gian hàng này
-    FirebaseService.getStoreRef(widget.storeId).child('settings/totalTables').onValue.listen((event) {
+    FirebaseService.getSettingsRef(widget.storeId).child('totalTables').onValue.listen((event) {
       if (event.snapshot.value != null && mounted) {
         setState(() {
           _totalTablesCount = int.tryParse(event.snapshot.value.toString()) ?? 40;
@@ -35,7 +37,6 @@ class _TableScreenState extends State<TableScreen> {
       }
     });
 
-    // Lắng nghe trạng thái từng bàn trong gian hàng
     FirebaseService.getTablesRef(widget.storeId).onValue.listen((event) {
       if (mounted) {
         Map<String, TableModel> loadedTables = {};
@@ -52,7 +53,6 @@ class _TableScreenState extends State<TableScreen> {
     });
   }
 
-  // Hàm đăng xuất đổi gian hàng
   void _logoutStore() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove('saved_store_id');
@@ -64,11 +64,66 @@ class _TableScreenState extends State<TableScreen> {
     );
   }
 
+  void _openServeModal(int tableId, bool currentNeedsServing) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Báo Bưng Nước Bàn $tableId', textAlign: TextAlign.center),
+          content: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC3545),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  onPressed: () {
+                    FirebaseService.getTableRef(widget.storeId, tableId.toString()).update({
+                      'needsServing': true,
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: const Text('RA MÓN', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black,
+                    side: const BorderSide(color: Colors.grey),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  onPressed: () {
+                    FirebaseService.getTableRef(widget.storeId, tableId.toString()).update({
+                      'needsServing': false,
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: const Text('TRỐNG', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Hủy'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('S-POS: ${widget.storeId.toUpperCase()}'),
+        title: Text('UYÊN COFFEE POS PRO (${widget.storeId.toUpperCase()})'),
         backgroundColor: const Color(0xFF5D3FD3),
         foregroundColor: Colors.white,
         actions: [
@@ -80,40 +135,33 @@ class _TableScreenState extends State<TableScreen> {
         ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(12.0),
+        padding: const EdgeInsets.all(10.0),
         child: GridView.builder(
           itemCount: _totalTablesCount,
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 5, // Hiển thị 5 cột bàn trên màn hình
+            crossAxisCount: 4,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            childAspectRatio: 1.1,
+            childAspectRatio: 0.95,
           ),
           itemBuilder: (context, index) {
             int tableId = index + 1;
             TableModel? table = _tablesMap[tableId.toString()];
 
-            // Xác định màu sắc theo trạng thái bàn:
-            // Trắng/Xám: Bàn trống
-            // Đỏ: Khách đang gọi món / chưa xong
-            // Xanh lá: Đã làm xong hết món / phục vụ hoàn tất
             Color bgColor = Colors.white;
-            Color borderColor = Colors.grey.shade300;
-            Color textColor = Colors.black87;
+            Color borderColor = const Color(0xFF2C3E50);
+            Color textColor = const Color(0xFF2C3E50);
 
             if (table != null) {
               if (table.status == 'red') {
-                bgColor = const Color(0xFFFFEBEE);
-                borderColor = Colors.red.shade300;
-                textColor = Colors.red.shade900;
+                bgColor = const Color(0xFFFFB8C0);
+                borderColor = const Color(0xFFDC3545);
               } else if (table.status == 'green') {
-                bgColor = const Color(0xFFE8F5E9);
-                borderColor = Colors.green.shade300;
-                textColor = Colors.green.shade900;
+                bgColor = const Color(0xFFB8E6C1);
+                borderColor = const Color(0xFF28A745);
               }
             }
 
-            // Tính tổng tiền của bàn
             double totalMoney = 0;
             if (table != null) {
               for (var item in table.items) {
@@ -121,58 +169,88 @@ class _TableScreenState extends State<TableScreen> {
               }
             }
 
+            if (totalMoney == 0 && table != null && table.status != 'white') {
+              FirebaseService.getTableRef(widget.storeId, tableId.toString()).update({
+                'status': 'white',
+                'items': null,
+                'startTime': null,
+              });
+            }
+
+            String timeText = '';
+            if (table?.startTime != null) {
+              DateTime? dt = DateTime.tryParse(table!.startTime!);
+              if (dt != null) {
+                int mins = DateTime.now().difference(dt).inMinutes;
+                if (mins >= 0) timeText = ' - ${mins}p';
+              }
+            }
+
+            bool needsServing = table?.needsServing ?? false;
+
             return InkWell(
               onTap: () {
-                // Chuyển sang màn hình POS chọn món của bàn này, truyền kèm storeId và tableId
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PosScreen(
-                      storeId: widget.storeId,
-                      tableId: tableId,
-                    ),
-                  ),
-                );
+                if (widget.onTableSelected != null) {
+                  widget.onTableSelected!(tableId);
+                }
               },
               child: Container(
                 decoration: BoxDecoration(
                   color: bgColor,
                   border: Border.all(color: borderColor, width: 2),
-                  borderRadius: BorderRadius.circular(10),
-                  boxShadow: [
-                    BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.03),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                padding: const EdgeInsets.all(4),
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
+                    const Text('🖨️', style: TextStyle(fontSize: 14)),
                     Text(
-                      'BÀN $tableId',
+                      'Bàn $tableId',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 14,
+                        fontSize: 13,
                         color: textColor,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    if (table != null && totalMoney > 0)
+                    if (totalMoney > 0)
                       Text(
                         '${totalMoney.toStringAsFixed(0)}đ',
-                        style: TextStyle(
-                          fontSize: 11,
+                        style: const TextStyle(
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          color: textColor,
+                          color: Color(0xFFDC3545),
                         ),
                       )
                     else
                       Text(
-                        'Trống',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        'Trống$timeText',
+                        style: TextStyle(fontSize: 10, color: Colors.grey.shade700),
                       ),
+                    InkWell(
+                      onTap: () => _openServeModal(tableId, needsServing),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        margin: const EdgeInsets.only(top: 2),
+                        decoration: BoxDecoration(
+                          color: needsServing ? const Color(0xFFDC3545) : Colors.white.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: needsServing ? Colors.transparent : Colors.grey.shade400,
+                          ),
+                        ),
+                        child: Text(
+                          needsServing ? 'CẦN BƯNG NƯỚC' : 'TRỐNG',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: needsServing ? Colors.white : Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),

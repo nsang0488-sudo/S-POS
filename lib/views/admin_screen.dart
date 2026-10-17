@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'dart:math';
 import '../firebase_service.dart';
 import '../models/product_model.dart';
 import 'store_login_screen.dart';
@@ -17,11 +18,12 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   List<ProductModel> _menuList = [];
   final TextEditingController _tablesController = TextEditingController();
-  
-  // Doanh thu trong ngày
-  double _totalRevenue = 0;
-  double _cashRevenue = 0;
-  double _transferRevenue = 0;
+  final TextEditingController _qrUrlController = TextEditingController();
+
+  Map<dynamic, dynamic> _activeShift = {};
+  Map<dynamic, dynamic> _shiftLogs = {};
+  Map<dynamic, dynamic> _devices = {};
+  String _regCode = '-----';
 
   @override
   void initState() {
@@ -29,9 +31,8 @@ class _AdminScreenState extends State<AdminScreen> {
     _loadAdminData();
   }
 
-  // Lấy dữ liệu menu, số bàn và doanh thu ca trong ngày của gian hàng
   void _loadAdminData() {
-    // 1. Lắng nghe Menu
+    // Menu
     FirebaseService.getMenuRef(widget.storeId).onValue.listen((event) {
       if (event.snapshot.value != null && mounted) {
         Map<dynamic, dynamic> data = event.snapshot.value as Map<dynamic, dynamic>;
@@ -47,72 +48,153 @@ class _AdminScreenState extends State<AdminScreen> {
       }
     });
 
-    // 2. Lắng nghe tổng số bàn
-    FirebaseService.getStoreRef(widget.storeId).child('settings/totalTables').onValue.listen((event) {
+    // Settings (tables, regCode, qrUrl)
+    FirebaseService.getSettingsRef(widget.storeId).onValue.listen((event) {
       if (event.snapshot.value != null && mounted) {
-        int val = int.tryParse(event.snapshot.value.toString()) ?? 40;
+        Map<dynamic, dynamic> settings = event.snapshot.value as Map<dynamic, dynamic>;
         setState(() {
-          _tablesController.text = val.toString();
+          _tablesController.text = (settings['totalTables'] ?? 40).toString();
+          _regCode = (settings['regCode'] ?? '-----').toString();
+          _qrUrlController.text = (settings['qrUrl'] ?? '').toString();
         });
       }
     });
 
-    // 3. Lắng nghe doanh thu trong ngày từ node shifts
-    FirebaseService.getShiftsRef(widget.storeId).onValue.listen((event) {
+    // Active Shift
+    FirebaseService.getActiveShiftRef(widget.storeId).onValue.listen((event) {
       if (event.snapshot.value != null && mounted) {
-        Map<dynamic, dynamic> data = event.snapshot.value as Map<dynamic, dynamic>;
-        double total = 0;
-        double cash = 0;
-        double transfer = 0;
-
-        data.forEach((key, value) {
-          Map<dynamic, dynamic> shift = value as Map<dynamic, dynamic>;
-          double amount = (shift['total'] ?? 0).toDouble();
-          String type = shift['type'] ?? 'cash';
-          
-          total += amount;
-          if (type == 'cash') {
-            cash += amount;
-          } else {
-            transfer += amount;
-          }
-        });
-
         setState(() {
-          _totalRevenue = total;
-          _cashRevenue = cash;
-          _transferRevenue = transfer;
+          _activeShift = event.snapshot.value as Map<dynamic, dynamic>;
         });
       } else if (mounted) {
         setState(() {
-          _totalRevenue = 0;
-          _cashRevenue = 0;
-          _transferRevenue = 0;
+          _activeShift = {};
+        });
+      }
+    });
+
+    // Shift Logs
+    FirebaseService.getShiftLogsRef(widget.storeId).onValue.listen((event) {
+      if (event.snapshot.value != null && mounted) {
+        setState(() {
+          _shiftLogs = event.snapshot.value as Map<dynamic, dynamic>;
+        });
+      } else if (mounted) {
+        setState(() {
+          _shiftLogs = {};
+        });
+      }
+    });
+
+    // Devices
+    FirebaseService.getDevicesRef(widget.storeId).onValue.listen((event) {
+      if (event.snapshot.value != null && mounted) {
+        setState(() {
+          _devices = event.snapshot.value as Map<dynamic, dynamic>;
+        });
+      } else if (mounted) {
+        setState(() {
+          _devices = {};
         });
       }
     });
   }
 
-  // Cập nhật tổng số bàn
-  void _updateTotalTables() {
-    int? newTables = int.tryParse(_tablesController.text.trim());
-    if (newTables == null || newTables <= 0) {
+  void _startShift() {
+    FirebaseService.getActiveShiftRef(widget.storeId).set({
+      'start': DateTime.now().toIso8601String(),
+      'revenue': 0,
+      'revenueCash': 0,
+      'revenueTransfer': 0,
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Đã mở ca mới thành công!')),
+    );
+  }
+
+  void _endShift() {
+    if (_activeShift.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Vui lòng nhập số lượng bàn hợp lệ!')),
+        const SnackBar(content: Text('Không có ca nào đang mở!')),
       );
       return;
     }
 
-    FirebaseService.getStoreRef(widget.storeId).child('settings').update({
-      'totalTables': newTables,
-    });
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Xác nhận CHỐT CA?'),
+          content: const Text('Toàn bộ bàn sẽ được dọn trống và ca làm việc sẽ được lưu vào lịch sử.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Hủy'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFDC3545),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                Map<String, dynamic> logData = {
+                  'start': _activeShift['start'] ?? '',
+                  'end': DateTime.now().toIso8601String(),
+                  'date': DateTime.now().toIso8601String().split('T')[0],
+                  'revenue': _activeShift['revenue'] ?? 0,
+                  'revenueCash': _activeShift['revenueCash'] ?? 0,
+                  'revenueTransfer': _activeShift['revenueTransfer'] ?? 0,
+                  'timestamp': ServerValue.timestamp,
+                };
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Đã cập nhật tổng số bàn thành: $newTables bàn!')),
+                await FirebaseService.getShiftLogsRef(widget.storeId).push().set(logData);
+                await FirebaseService.getActiveShiftRef(widget.storeId).remove();
+                await FirebaseService.getTablesRef(widget.storeId).remove();
+
+                if (!context.mounted) return;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Đã chốt ca thành công!')),
+                );
+              },
+              child: const Text('CHỐT CA'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  // Thêm món mới vào menu
+  void _generateNewRegCode() {
+    String newCode = (10000 + Random().nextInt(90000)).toString();
+    FirebaseService.getSettingsRef(widget.storeId).update({'regCode': newCode});
+  }
+
+  void _updateDeviceRole(String devKey, String newRole) {
+    FirebaseService.getDevicesRef(widget.storeId).child(devKey).update({'role': newRole});
+  }
+
+  void _deleteDevice(String devKey) {
+    FirebaseService.getDevicesRef(widget.storeId).child(devKey).remove();
+  }
+
+  void _saveQR() {
+    FirebaseService.getSettingsRef(widget.storeId).update({'qrUrl': _qrUrlController.text.trim()});
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Đã lưu cài đặt QR!')),
+    );
+  }
+
+  void _updateTotalTables() {
+    int? val = int.tryParse(_tablesController.text.trim());
+    if (val != null && val > 0) {
+      FirebaseService.getSettingsRef(widget.storeId).update({'totalTables': val});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Đã lưu tổng số bàn: $val bàn')),
+      );
+    }
+  }
+
   void _showAddProductDialog() {
     final TextEditingController nameController = TextEditingController();
     final TextEditingController priceController = TextEditingController();
@@ -122,22 +204,22 @@ class _AdminScreenState extends State<AdminScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Thêm Món Mới Vào Menu'),
+          title: const Text('Thêm Món Mới'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(labelText: 'Tên món (VD: Cà phê đen)'),
+                decoration: const InputDecoration(labelText: 'Tên món'),
               ),
               TextField(
                 controller: priceController,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Giá tiền (VD: 20000)'),
+                decoration: const InputDecoration(labelText: 'Giá (VD: 25000)'),
               ),
               TextField(
                 controller: catController,
-                decoration: const InputDecoration(labelText: 'Danh mục (VD: Cà phê, Trà sữa...)'),
+                decoration: const InputDecoration(labelText: 'Nhóm món'),
               ),
             ],
           ),
@@ -147,28 +229,24 @@ class _AdminScreenState extends State<AdminScreen> {
               child: const Text('Hủy'),
             ),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5D3FD3), foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF5D3FD3),
+                foregroundColor: Colors.white,
+              ),
               onPressed: () {
                 String name = nameController.text.trim();
                 double? price = double.tryParse(priceController.text.trim());
                 String cat = catController.text.trim();
 
-                if (name.isEmpty || price == null) {
-                  return;
+                if (name.isNotEmpty && price != null) {
+                  FirebaseService.getMenuRef(widget.storeId).push().set({
+                    'name': name,
+                    'price': price,
+                    'category': cat.isEmpty ? 'Khác' : cat,
+                    'soldOut': false,
+                  });
+                  Navigator.pop(context);
                 }
-
-                DatabaseReference newRef = FirebaseService.getMenuRef(widget.storeId).push();
-                newRef.set({
-                  'name': name,
-                  'price': price,
-                  'category': cat.isEmpty ? 'Khác' : cat,
-                  'soldOut': false,
-                });
-
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Đã thêm món mới thành công!')),
-                );
               },
               child: const Text('THÊM MÓN'),
             ),
@@ -178,19 +256,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // Đổi trạng thái Báo hết / Mở lại món
-  void _toggleSoldOut(ProductModel product) {
-    FirebaseService.getMenuRef(widget.storeId).child(product.id).update({
-      'soldOut': !product.soldOut,
-    });
-  }
-
-  // Xóa món khỏi menu
-  void _deleteProduct(ProductModel product) {
-    FirebaseService.getMenuRef(widget.storeId).child(product.id).remove();
-  }
-
-  // Đăng xuất đổi gian hàng
   void _logoutStore() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.remove('saved_store_id');
@@ -204,9 +269,19 @@ class _AdminScreenState extends State<AdminScreen> {
 
   @override
   Widget build(BuildContext context) {
+    bool isShiftActive = _activeShift.isNotEmpty;
+    double revenue = (_activeShift['revenue'] ?? 0).toDouble();
+    double revenueCash = (_activeShift['revenueCash'] ?? 0).toDouble();
+    double revenueTransfer = (_activeShift['revenueTransfer'] ?? 0).toDouble();
+
+    Map<dynamic, dynamic> activeHistory = {};
+    if (isShiftActive && _activeShift['history'] != null) {
+      activeHistory = _activeShift['history'] as Map<dynamic, dynamic>;
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('Quản Lý Gian Hàng: ${widget.storeId.toUpperCase()}'),
+        title: Text('⚙️ QUẢN LÝ GIAN HÀNG (${widget.storeId.toUpperCase()})'),
         backgroundColor: const Color(0xFF5D3FD3),
         foregroundColor: Colors.white,
         actions: [
@@ -222,137 +297,339 @@ class _AdminScreenState extends State<AdminScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // PHẦN 1: BÁO CÁO DOANH THU TRONG NGÀY
-            const Text('BÁO CÁO DOANH THU TRONG NGÀY', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF5D3FD3))),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.blue.shade200)),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Tổng Doanh Thu', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 6),
-                        Text('${_totalRevenue.toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.green.shade200)),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Tiền Mặt', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 6),
-                        Text('${_cashRevenue.toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.purple.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.purple.shade200)),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Chuyển Khoản QR', style: TextStyle(color: Colors.purple, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 6),
-                        Text('${_transferRevenue.toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 16),
-
-            // PHẦN 2: CẤU HÌNH SỐ LƯỢNG BÀN
-            const Text('CẤU HÌNH SỐ LƯỢNG BÀN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF5D3FD3))),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                SizedBox(
-                  width: 200,
-                  child: TextField(
-                    controller: _tablesController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Tổng số bàn hiển thị',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5D3FD3), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20)),
-                  onPressed: _updateTotalTables,
-                  child: const Text('LƯU SỐ BÀN', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 16),
-
-            // PHẦN 3: QUẢN LÝ MENU MÓN ĂN
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('QUẢN LÝ MENU MÓN ĂN', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF5D3FD3))),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5D3FD3), foregroundColor: Colors.white),
-                  onPressed: _showAddProductDialog,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Thêm Món Mới'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _menuList.length,
-              itemBuilder: (context, index) {
-                ProductModel product = _menuList[index];
-                return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  child: ListTile(
-                    title: Text(product.name, style: TextStyle(fontWeight: FontWeight.bold, decoration: product.soldOut ? TextDecoration.lineThrough : null)),
-                    subtitle: Text('Danh mục: ${product.category} | Giá: ${product.price.toStringAsFixed(0)}đ'),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        ElevatedButton(
+            // CA HIỆN TẠI & DOANH THU CA
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('📦 Trạng Thái Ca Đang Mở', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    if (!isShiftActive)
+                      const Text('Chưa mở ca', style: TextStyle(color: Colors.grey))
+                    else ...[
+                      Text('Thời gian mở: ${_activeShift['start'] ?? ''}', style: const TextStyle(fontSize: 12)),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Text('💵 TM: ${revenueCash.toStringAsFixed(0)}đ', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                          const SizedBox(width: 16),
+                          Text('💳 CK: ${revenueTransfer.toStringAsFixed(0)}đ', style: const TextStyle(color: Color(0xFF5D3FD3), fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text('Tổng ca: ${revenue.toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFDC3545))),
+                    ],
+                    const SizedBox(height: 12),
+                    if (!isShiftActive)
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: product.soldOut ? Colors.green : Colors.orange,
+                            backgroundColor: const Color(0xFF28A745),
                             foregroundColor: Colors.white,
                           ),
-                          onPressed: () => _toggleSoldOut(product),
-                          child: Text(product.soldOut ? 'Mở lại' : 'Báo Hết'),
+                          onPressed: _startShift,
+                          child: const Text('MỞ CA MỚI', style: TextStyle(fontWeight: FontWeight.bold)),
                         ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () => _deleteProduct(product),
+                      )
+                    else
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFDC3545),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: _endShift,
+                          child: const Text('CHỐT CA (ĐÓNG CA)', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // BILL TRONG CA HIỆN TẠI
+            if (activeHistory.isNotEmpty) ...[
+              const Text('🧾 Bill Trong Ca Hiện Tại', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: activeHistory.length,
+                itemBuilder: (context, index) {
+                  String billKey = activeHistory.keys.elementAt(index).toString();
+                  Map<dynamic, dynamic> bill = activeHistory[billKey] as Map<dynamic, dynamic>;
+
+                  int table = bill['table'] ?? 0;
+                  double total = (bill['total'] ?? 0).toDouble();
+                  String method = bill['method'] ?? 'cash';
+
+                  return Card(
+                    child: ListTile(
+                      title: Text('Bàn $table - Total: ${total.toStringAsFixed(0)}đ'),
+                      subtitle: Text('Hình thức: ${method == 'transfer' ? '💳 CK' : '💵 TM'}'),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () async {
+                          double curRev = (_activeShift['revenue'] ?? 0).toDouble();
+                          double curCash = (_activeShift['revenueCash'] ?? 0).toDouble();
+                          double curTransfer = (_activeShift['revenueTransfer'] ?? 0).toDouble();
+
+                          Map<String, dynamic> updates = {};
+                          updates['stores/${widget.storeId}/active_shift/revenue'] = curRev - total;
+                          if (method == 'cash') {
+                            updates['stores/${widget.storeId}/active_shift/revenueCash'] = curCash - total;
+                          } else {
+                            updates['stores/${widget.storeId}/active_shift/revenueTransfer'] = curTransfer - total;
+                          }
+                          updates['stores/${widget.storeId}/active_shift/history/$billKey'] = null;
+
+                          await FirebaseDatabase.instance.ref().update(updates);
+                        },
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // LỊCH SỬ CA ĐÃ CHỐT
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('📜 Lịch Sử Ca Đã Chốt', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    if (_shiftLogs.isEmpty)
+                      const Text('Chưa có ca nào được chốt.', style: TextStyle(color: Colors.grey))
+                    else
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _shiftLogs.length,
+                        itemBuilder: (context, index) {
+                          String logKey = _shiftLogs.keys.elementAt(index).toString();
+                          Map<dynamic, dynamic> log = _shiftLogs[logKey] as Map<dynamic, dynamic>;
+
+                          String date = log['date'] ?? '';
+                          double rev = (log['revenue'] ?? 0).toDouble();
+                          double cash = (log['revenueCash'] ?? 0).toDouble();
+                          double transfer = (log['revenueTransfer'] ?? 0).toDouble();
+
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text('📅 $date - ${rev.toStringAsFixed(0)}đ', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text('TM: ${cash.toStringAsFixed(0)}đ | CK: ${transfer.toStringAsFixed(0)}đ'),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () {
+                                FirebaseService.getShiftLogsRef(widget.storeId).child(logKey).remove();
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // MÃ ĐĂNG KÝ & THIẾT BỊ NHÂN VIÊN (QR CONNECTIONS)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('📱 Thiết Bị & Kết Nối Nhân Viên (QR / Code)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Mã đăng ký:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                            Text(_regCode, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF5D3FD3))),
+                          ],
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFCCA352),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: _generateNewRegCode,
+                          child: const Text('MÃ MỚI'),
                         ),
                       ],
                     ),
-                  ),
-                );
-              },
+                    const Divider(height: 20),
+                    const Text('Danh sách thiết bị kết nối:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    if (_devices.isEmpty)
+                      const Text('Chưa có thiết bị nào đăng ký.', style: TextStyle(color: Colors.grey))
+                    else
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _devices.length,
+                        itemBuilder: (context, index) {
+                          String devKey = _devices.keys.elementAt(index).toString();
+                          Map<dynamic, dynamic> dev = _devices[devKey] as Map<dynamic, dynamic>;
+
+                          String name = dev['name'] ?? 'Chưa tên';
+                          String role = dev['role'] ?? 'Phục vụ';
+
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: Text('👤 $name', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: DropdownButton<String>(
+                              value: role,
+                              items: const [
+                                DropdownMenuItem(value: 'Phục vụ', child: Text('Phục vụ')),
+                                DropdownMenuItem(value: 'Thu ngân', child: Text('Thu ngân')),
+                                DropdownMenuItem(value: 'Quản lý', child: Text('Quản lý')),
+                              ],
+                              onChanged: (newRole) {
+                                if (newRole != null) _updateDeviceRole(devKey, newRole);
+                              },
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => _deleteDevice(devKey),
+                            ),
+                          );
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // SETTINGS & MENU MANAGEMENT
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('🖼️ Cài Đặt QR Chuyển Khoản & Số Bàn', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _qrUrlController,
+                      decoration: const InputDecoration(
+                        labelText: 'Link ảnh QR chuyển khoản',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2C3E50),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _saveQR,
+                        child: const Text('LƯU QR'),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _tablesController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Tổng số bàn hiển thị',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF5D3FD3),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: _updateTotalTables,
+                        child: const Text('LƯU SỐ BÀN'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // MENU MANAGEMENT
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('📝 Quản Lý Menu Món', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5D3FD3),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: _showAddProductDialog,
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('THÊM MÓN'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _menuList.length,
+                      itemBuilder: (context, index) {
+                        ProductModel item = _menuList[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(item.name, style: TextStyle(fontWeight: FontWeight.bold, decoration: item.soldOut ? TextDecoration.lineThrough : null)),
+                          subtitle: Text('Nhóm: ${item.category} | ${item.price.toStringAsFixed(0)}đ'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton(
+                                onPressed: () {
+                                  FirebaseService.getMenuRef(widget.storeId).child(item.id).update({'soldOut': !item.soldOut});
+                                },
+                                child: Text(item.soldOut ? 'Mở lại' : 'Báo hết', style: TextStyle(color: item.soldOut ? Colors.green : Colors.orange)),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () {
+                                  FirebaseService.getMenuRef(widget.storeId).child(item.id).remove();
+                                },
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),

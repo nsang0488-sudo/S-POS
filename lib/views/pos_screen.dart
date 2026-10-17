@@ -7,9 +7,17 @@ import '../models/table_model.dart';
 
 class PosScreen extends StatefulWidget {
   final String storeId;
-  final int tableId;
+  final int? tableId;
+  final VoidCallback? onBackToTables;
+  final VoidCallback? onClearTable;
 
-  const PosScreen({super.key, required this.storeId, required this.tableId});
+  const PosScreen({
+    super.key,
+    required this.storeId,
+    this.tableId,
+    this.onBackToTables,
+    this.onClearTable,
+  });
 
   @override
   State<PosScreen> createState() => _PosScreenState();
@@ -23,15 +31,26 @@ class _PosScreenState extends State<PosScreen> {
   double _totalAmount = 0;
   String _tableStatus = 'white';
 
+  Map<dynamic, dynamic> _currentShiftData = {};
+  Map<String, TableModel> _allTablesData = {};
+  String _qrUrl = '';
+
   @override
   void initState() {
     super.initState();
-    _loadMenu();
-    _listenTableData();
+    _loadData();
   }
 
-  // Lấy Menu từ Firebase theo storeId
-  void _loadMenu() {
+  @override
+  void didUpdateWidget(covariant PosScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tableId != widget.tableId && widget.tableId != null) {
+      _listenTableData();
+    }
+  }
+
+  void _loadData() {
+    // Menu
     FirebaseService.getMenuRef(widget.storeId).onValue.listen((event) {
       if (event.snapshot.value != null && mounted) {
         Map<dynamic, dynamic> data = event.snapshot.value as Map<dynamic, dynamic>;
@@ -50,10 +69,50 @@ class _PosScreenState extends State<PosScreen> {
         });
       }
     });
+
+    // Active Shift
+    FirebaseService.getActiveShiftRef(widget.storeId).onValue.listen((event) {
+      if (event.snapshot.value != null && mounted) {
+        setState(() {
+          _currentShiftData = event.snapshot.value as Map<dynamic, dynamic>;
+        });
+      } else if (mounted) {
+        setState(() {
+          _currentShiftData = {};
+        });
+      }
+    });
+
+    // All Tables (for move / merge)
+    FirebaseService.getTablesRef(widget.storeId).onValue.listen((event) {
+      if (event.snapshot.value != null && mounted) {
+        Map<dynamic, dynamic> data = event.snapshot.value as Map<dynamic, dynamic>;
+        Map<String, TableModel> map = {};
+        data.forEach((k, v) {
+          map[k.toString()] = TableModel.fromMap(v as Map<dynamic, dynamic>);
+        });
+        setState(() {
+          _allTablesData = map;
+        });
+      }
+    });
+
+    // Settings / QR
+    FirebaseService.getSettingsRef(widget.storeId).child('qrUrl').onValue.listen((event) {
+      if (event.snapshot.value != null && mounted) {
+        setState(() {
+          _qrUrl = event.snapshot.value.toString();
+        });
+      }
+    });
+
+    if (widget.tableId != null) {
+      _listenTableData();
+    }
   }
 
-  // Lắng nghe dữ liệu bàn hiện tại theo storeId
   void _listenTableData() {
+    if (widget.tableId == null) return;
     FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).onValue.listen((event) {
       if (mounted) {
         if (event.snapshot.value != null) {
@@ -78,8 +137,14 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // Thêm món vào bàn và đẩy lên Firebase
   void _addOptionAndConfirm(ProductModel product, String tempType, String note) {
+    if (widget.tableId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vui lòng chọn bàn trước!')),
+      );
+      return;
+    }
+
     if (product.soldOut) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Món này đã báo hết, không thể gọi!')),
@@ -101,8 +166,14 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // Bảng chọn Nóng/Đá và Ghi chú
   void _showAddDialog(ProductModel product) {
+    if (widget.tableId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Vui lòng chọn bàn trước!')),
+      );
+      return;
+    }
+
     String curType = 'Đá';
     TextEditingController noteController = TextEditingController();
 
@@ -157,7 +228,10 @@ class _PosScreenState extends State<PosScreen> {
                   child: const Text('Hủy'),
                 ),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5D3FD3), foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5D3FD3),
+                    foregroundColor: Colors.white,
+                  ),
                   onPressed: () {
                     Navigator.pop(context);
                     _addOptionAndConfirm(product, curType, noteController.text.trim());
@@ -172,14 +246,14 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // Xác nhận đơn (Đổi bàn sang màu đỏ)
   void _handleConfirm() {
+    if (widget.tableId == null) return;
     FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({'status': 'red'});
-    Navigator.pop(context);
+    if (widget.onBackToTables != null) widget.onBackToTables!();
   }
 
-  // Xong hết (Đổi bàn sang màu xanh)
   void _handleDoneAll() {
+    if (widget.tableId == null) return;
     List<OrderItemModel> updatedList = List.from(_currentBillItems);
     for (var item in updatedList) {
       item.done = true;
@@ -188,46 +262,171 @@ class _PosScreenState extends State<PosScreen> {
       'items': updatedList.map((e) => e.toMap()).toList(),
       'status': 'green',
     });
-    Navigator.pop(context);
+    if (widget.onBackToTables != null) widget.onBackToTables!();
   }
 
-  // Xử lý Thanh toán và lưu doanh thu vào ca làm việc
-  void _handlePayment() {
-    if (_totalAmount <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Bàn này chưa có món nào để thanh toán!')),
-      );
-      return;
-    }
+  void _openQtyEditDialog(int index) {
+    OrderItemModel item = _currentBillItems[index];
+    int qtyVal = item.qty;
 
     showDialog(
       context: context,
       builder: (context) {
-        bool isTransfer = false;
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: Text('THANH TOÁN - BÀN ${widget.tableId}'),
+              title: const Text('Sửa món', textAlign: TextAlign.center),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Tổng tiền: ${_totalAmount.toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.purple)),
-                  const SizedBox(height: 16),
+                  Text(
+                    item.fName,
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF5D3FD3), fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      ChoiceChip(
-                        label: const Text('Tiền mặt'),
-                        selected: !isTransfer,
-                        onSelected: (val) => setDialogState(() => isTransfer = false),
+                      OutlinedButton(
+                        onPressed: () {
+                          if (qtyVal > 1) setDialogState(() => qtyVal--);
+                        },
+                        child: const Text('-', style: TextStyle(fontSize: 24)),
                       ),
-                      const SizedBox(width: 12),
-                      ChoiceChip(
-                        label: const Text('Chuyển khoản QR'),
-                        selected: isTransfer,
-                        onSelected: (val) => setDialogState(() => isTransfer = true),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Text('$qtyVal', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => setDialogState(() => qtyVal++),
+                        child: const Text('+', style: TextStyle(fontSize: 24)),
                       ),
                     ],
+                  ),
+                ],
+              ),
+              actionsAlignment: MainAxisAlignment.center,
+              actions: [
+                Column(
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF5D3FD3),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () {
+                          List<OrderItemModel> updatedList = List.from(_currentBillItems);
+                          updatedList[index].qty = qtyVal;
+                          updatedList[index].done = true;
+                          FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({
+                            'items': updatedList.map((e) => e.toMap()).toList(),
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: const Text('XONG', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC3545),
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: () {
+                          List<OrderItemModel> updatedList = List.from(_currentBillItems);
+                          updatedList.removeAt(index);
+                          if (updatedList.isEmpty) {
+                            FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).remove();
+                          } else {
+                            FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).update({
+                              'items': updatedList.map((e) => e.toMap()).toList(),
+                            });
+                          }
+                          Navigator.pop(context);
+                        },
+                        child: const Text('XÓA MÓN', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Đóng'),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _openMoveTableDialog() {
+    if (widget.tableId == null) return;
+    int sourceTable = widget.tableId!;
+    int targetTable = sourceTable == 1 ? 2 : 1;
+    String moveMode = 'move'; // 'move' or 'merge'
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Chuyển / Gộp bàn'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Thao tác cho Bàn $sourceTable:'),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: moveMode == 'move' ? const Color(0xFF5D3FD3) : Colors.grey[200],
+                            foregroundColor: moveMode == 'move' ? Colors.white : Colors.black,
+                          ),
+                          onPressed: () => setDialogState(() => moveMode = 'move'),
+                          child: const Text('CHUYỂN BÀN'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: moveMode == 'merge' ? const Color(0xFF5D3FD3) : Colors.grey[200],
+                            foregroundColor: moveMode == 'merge' ? Colors.white : Colors.black,
+                          ),
+                          onPressed: () => setDialogState(() => moveMode = 'merge'),
+                          child: const Text('GỘP BÀN'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<int>(
+                    initialValue: targetTable,
+                    decoration: const InputDecoration(
+                      labelText: 'Đến bàn:',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: List.generate(40, (index) => index + 1)
+                        .where((i) => i != sourceTable)
+                        .map((i) => DropdownMenuItem<int>(
+                              value: i,
+                              child: Text('Bàn $i'),
+                            ))
+                        .toList(),
+                    onChanged: (val) {
+                      if (val != null) setDialogState(() => targetTable = val);
+                    },
                   ),
                 ],
               ),
@@ -237,28 +436,205 @@ class _PosScreenState extends State<PosScreen> {
                   child: const Text('Hủy'),
                 ),
                 ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5D3FD3),
+                    foregroundColor: Colors.white,
+                  ),
                   onPressed: () async {
-                    // 1. Lưu doanh thu vào node shifts của gian hàng để thống kê cuối ngày
-                    DatabaseReference shiftRef = FirebaseService.getShiftsRef(widget.storeId).push();
-                    await shiftRef.set({
-                      'timestamp': ServerValue.timestamp,
-                      'total': _totalAmount,
-                      'type': isTransfer ? 'transfer' : 'cash',
-                      'tableId': widget.tableId,
-                    });
+                    if (moveMode == 'move') {
+                      DataSnapshot sourceSnap = await FirebaseService.getTableRef(
+                        widget.storeId,
+                        sourceTable.toString(),
+                      ).get();
 
-                    // 2. Xóa bàn (trả bàn về trạng thái trống)
-                    await FirebaseService.getTableRef(widget.storeId, widget.tableId.toString()).remove();
+                      if (sourceSnap.value != null) {
+                        await FirebaseService.getTableRef(
+                          widget.storeId,
+                          targetTable.toString(),
+                        ).set(sourceSnap.value);
+                        await FirebaseService.getTableRef(
+                          widget.storeId,
+                          sourceTable.toString(),
+                        ).remove();
+                      }
+                    } else {
+                      // Merge
+                      List<OrderItemModel> sourceItems = _currentBillItems;
+                      TableModel? targetModel = _allTablesData[targetTable.toString()];
+                      List<OrderItemModel> targetItems = targetModel?.items ?? [];
+
+                      List<OrderItemModel> merged = [...targetItems, ...sourceItems];
+                      String status = (_tableStatus == 'red' || targetModel?.status == 'red')
+                          ? 'red'
+                          : 'white';
+
+                      await FirebaseService.getTableRef(widget.storeId, targetTable.toString()).set({
+                        'items': merged.map((e) => e.toMap()).toList(),
+                        'startTime': DateTime.now().toIso8601String(),
+                        'status': status,
+                      });
+                      await FirebaseService.getTableRef(widget.storeId, sourceTable.toString()).remove();
+                    }
 
                     if (!context.mounted) return;
-                    Navigator.pop(context); // Đóng popup thanh toán
-                    Navigator.pop(context); // Trở về màn hình sơ đồ bàn
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Thanh toán thành công!')),
-                    );
+                    Navigator.pop(context);
+                    if (widget.onBackToTables != null) widget.onBackToTables!();
                   },
-                  child: const Text('XÁC NHẬN THU TIỀN'),
+                  child: const Text('XÁC NHẬN'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _handlePayment() {
+    if (widget.tableId == null || _totalAmount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Bàn này chưa có món nào để thanh toán!')),
+      );
+      return;
+    }
+
+    TextEditingController cashInController = TextEditingController();
+    double cashChange = 0;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        bool isTransfer = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Thanh toán', textAlign: TextAlign.center),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Tổng: ${_totalAmount.toStringAsFixed(0)}đ',
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFFDC3545)),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: !isTransfer ? const Color(0xFF5D3FD3) : Colors.grey[200],
+                              foregroundColor: !isTransfer ? Colors.white : Colors.black,
+                            ),
+                            onPressed: () => setDialogState(() => isTransfer = false),
+                            child: const Text('TIỀN MẶT'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isTransfer ? const Color(0xFF5D3FD3) : Colors.grey[200],
+                              foregroundColor: isTransfer ? Colors.white : Colors.black,
+                            ),
+                            onPressed: () => setDialogState(() => isTransfer = true),
+                            child: const Text('CHUYỂN KHOẢN'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    if (!isTransfer) ...[
+                      TextField(
+                        controller: cashInController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Khách đưa...',
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (val) {
+                          double cashIn = double.tryParse(val) ?? 0;
+                          setDialogState(() {
+                            cashChange = cashIn - _totalAmount;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Thối: ${cashChange > 0 ? cashChange.toStringAsFixed(0) : 0}đ',
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF28A745)),
+                      ),
+                    ] else ...[
+                      if (_qrUrl.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Image.network(
+                            _qrUrl,
+                            height: 180,
+                            errorBuilder: (_, __, ___) => const Text('Không tải được ảnh QR'),
+                          ),
+                        )
+                      else
+                        const Text('Chưa cài đặt Link QR chuyển khoản'),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                Column(
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2C3E50),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: () async {
+                          double curRev = (_currentShiftData['revenue'] ?? 0).toDouble();
+                          double curCash = (_currentShiftData['revenueCash'] ?? 0).toDouble();
+                          double curTransfer = (_currentShiftData['revenueTransfer'] ?? 0).toDouble();
+
+                          double newRev = curRev + _totalAmount;
+                          double newCash = isTransfer ? curCash : (curCash + _totalAmount);
+                          double newTransfer = isTransfer ? (curTransfer + _totalAmount) : curTransfer;
+
+                          String billKey = DateTime.now().millisecondsSinceEpoch.toString();
+
+                          Map<String, dynamic> billData = {
+                            'table': widget.tableId,
+                            'total': _totalAmount,
+                            'method': isTransfer ? 'transfer' : 'cash',
+                            'time': DateTime.now().toIso8601String(),
+                            'items': _currentBillItems.map((e) => e.toMap()).toList(),
+                          };
+
+                          Map<String, dynamic> updates = {};
+                          updates['stores/${widget.storeId}/active_shift/revenue'] = newRev;
+                          updates['stores/${widget.storeId}/active_shift/revenueCash'] = newCash;
+                          updates['stores/${widget.storeId}/active_shift/revenueTransfer'] = newTransfer;
+                          updates['stores/${widget.storeId}/active_shift/history/$billKey'] = billData;
+                          updates['stores/${widget.storeId}/tables/${widget.tableId}'] = null;
+
+                          await FirebaseDatabase.instance.ref().update(updates);
+
+                          if (!context.mounted) return;
+                          Navigator.pop(context);
+                          if (widget.onClearTable != null) widget.onClearTable!();
+                          if (widget.onBackToTables != null) widget.onBackToTables!();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Thanh toán hoàn tất!')),
+                          );
+                        },
+                        child: const Text('HOÀN TẤT', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Hủy'),
+                    ),
+                  ],
                 ),
               ],
             );
@@ -270,28 +646,68 @@ class _PosScreenState extends State<PosScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.tableId == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('GỌI MÓN (POS)'),
+          backgroundColor: const Color(0xFF5D3FD3),
+          foregroundColor: Colors.white,
+        ),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.table_restaurant, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text(
+                'Chưa chọn bàn nào để gọi món!',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF5D3FD3),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: widget.onBackToTables,
+                child: const Text('CHỌN BÀN NGAY'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     List<ProductModel> filteredMenu = _selectedCategory == 'Tất cả'
         ? _menuList
         : _menuList.where((e) => e.category == _selectedCategory).toList();
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('BÀN ${widget.tableId} - Gọi Món'),
+        title: Text('UYÊN COFFEE POS PRO (${widget.storeId.toUpperCase()})'),
         backgroundColor: const Color(0xFF5D3FD3),
         foregroundColor: Colors.white,
+        actions: [
+          TextButton.icon(
+            style: TextButton.styleFrom(foregroundColor: Colors.white),
+            onPressed: widget.onBackToTables,
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('ĐỔI BÀN'),
+          ),
+        ],
       ),
       body: Row(
         children: [
-          // BÊN TRÁI: DANH MỤC & LƯỚI MENU MÓN ĂN
+          // BÊN TRÁI: DANH MỤC & MENU MÓN
           Expanded(
-            flex: 6,
+            flex: 55,
             child: Container(
               color: const Color(0xFFF4F6F8),
               child: Row(
                 children: [
                   // Sidebar danh mục
                   Container(
-                    width: 90,
+                    width: 80,
                     color: Colors.white,
                     child: ListView.builder(
                       itemCount: _categories.length,
@@ -301,7 +717,7 @@ class _PosScreenState extends State<PosScreen> {
                         return InkWell(
                           onTap: () => setState(() => _selectedCategory = cat),
                           child: Container(
-                            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
+                            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
                             decoration: BoxDecoration(
                               color: isSelected ? const Color(0xFF5D3FD3) : Colors.white,
                               border: const Border(bottom: BorderSide(color: Colors.black12)),
@@ -312,7 +728,7 @@ class _PosScreenState extends State<PosScreen> {
                               style: TextStyle(
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
-                                color: isSelected ? Colors.white : Colors.black87,
+                                color: isSelected ? Colors.white : const Color(0xFF2C3E50),
                               ),
                             ),
                           ),
@@ -320,7 +736,7 @@ class _PosScreenState extends State<PosScreen> {
                       },
                     ),
                   ),
-                  // Danh sách món
+                  // Lưới món ăn
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.all(8.0),
@@ -338,8 +754,8 @@ class _PosScreenState extends State<PosScreen> {
                             onTap: () => _showAddDialog(product),
                             child: Container(
                               decoration: BoxDecoration(
-                                color: product.soldOut ? Colors.grey[300] : Colors.white,
-                                border: Border.all(color: Colors.black12),
+                                color: product.soldOut ? const Color(0xFFE9ECEF) : Colors.white,
+                                border: Border.all(color: const Color(0xFF1C2833)),
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Column(
@@ -351,12 +767,12 @@ class _PosScreenState extends State<PosScreen> {
                                     style: TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 12,
-                                      color: product.soldOut ? Colors.grey[600] : Colors.black,
+                                      color: product.soldOut ? Colors.grey : Colors.black,
                                     ),
                                   ),
                                   const SizedBox(height: 4),
                                   if (product.soldOut)
-                                    const Text('HẾT MÓN', style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.bold))
+                                    const Text('HẾT MÓN', style: TextStyle(color: Colors.red, fontSize: 11, fontWeight: FontWeight.bold))
                                   else
                                     Text(
                                       '${(product.price / 1000).toStringAsFixed(0)}k',
@@ -375,59 +791,86 @@ class _PosScreenState extends State<PosScreen> {
             ),
           ),
 
-          // BÊN PHẢI: GIỎ HÀNG CỦA BÀN & NÚT THAO TÁC
+          // BÊN PHẢI: BILL MÓN TRÊN CÙNG & CÁC NÚT ĐIỀU KHIỂN
           Expanded(
-            flex: 4,
+            flex: 45,
             child: Container(
               color: Colors.white,
               child: Column(
                 children: [
+                  // Thanh thông tin bàn & tổng tiền trên cùng
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     color: const Color(0xFF2C3E50),
-                    width: double.infinity,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('BÀN ${widget.tableId}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${_totalAmount.toStringAsFixed(0)}đ',
-                          style: const TextStyle(color: Color(0xFFCCA352), fontSize: 20, fontWeight: FontWeight.bold),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'BÀN ${widget.tableId}',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                            ),
+                            Text(
+                              '${_totalAmount.toStringAsFixed(0)}đ',
+                              style: const TextStyle(color: Color(0xFFCCA352), fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white.withValues(alpha: 0.2),
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white38),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          ),
+                          onPressed: _openMoveTableDialog,
+                          child: const Text('CHUYỂN / GỘP', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                         ),
                       ],
                     ),
                   ),
+
+                  // Danh sách các món trong bill của bàn
                   Expanded(
                     child: ListView.builder(
                       itemCount: _currentBillItems.length,
                       itemBuilder: (context, index) {
                         OrderItemModel item = _currentBillItems[index];
-                        return Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: const BoxDecoration(
-                            border: Border(bottom: BorderSide(color: Colors.black12, style: BorderStyle.solid)),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  '${item.qty}x ${item.fName}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: item.done ? Colors.black : Colors.red,
+                        return InkWell(
+                          onTap: () => _openQtyEditDialog(index),
+                          child: Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: const BoxDecoration(
+                              border: Border(bottom: BorderSide(color: Colors.black12)),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${item.qty}x ${item.fName}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: item.done ? Colors.black : const Color(0xFFDC3545),
+                                    ),
                                   ),
                                 ),
-                              ),
-                              Text('${(item.price * item.qty).toStringAsFixed(0)}đ', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                            ],
+                                Text(
+                                  '${(item.price * item.qty).toStringAsFixed(0)}đ',
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
                           ),
                         );
                       },
                     ),
                   ),
+
+                  // Control Buttons
                   Padding(
                     padding: const EdgeInsets.all(8.0),
                     child: Column(
@@ -436,28 +879,40 @@ class _PosScreenState extends State<PosScreen> {
                           children: [
                             Expanded(
                               child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFDC3545), foregroundColor: Colors.white),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFFDC3545),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
                                 onPressed: _handleConfirm,
                                 child: const Text('XÁC NHẬN', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                               ),
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 8),
                             Expanded(
                               child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF28A745), foregroundColor: Colors.white),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF28A745),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                ),
                                 onPressed: _handleDoneAll,
                                 child: const Text('XONG HẾT', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2C3E50), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2C3E50),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
                             onPressed: _handlePayment,
-                            child: const Text('THANH TOÁN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            child: const Text('THANH TOÁN', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                           ),
                         ),
                       ],
